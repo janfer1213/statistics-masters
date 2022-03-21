@@ -1,0 +1,985 @@
+---
+title: "EDA"
+author: "Bryan Ho, Janice Ferrer, Lakhvir Atwal, Melissa Myers, Paul Lin"
+date: "`r format(Sys.Date(), '%d %B, %Y')`"
+output: 
+  pdf_document:
+    includes:
+      in_header: compact-title.tex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(tidyverse)
+library(RColorBrewer)
+library(cowplot)
+library(ggpubr)
+library(survival)
+library(survminer)
+library(ggsci)
+library(colorspace)
+library(caret)
+library(sjPlot)
+library(dbplyr)
+library(compareGroups)
+## need to update data.table package for this package
+## use xcode tools command in Terminal if needed: xcode-select--install
+library(jtools)
+`%ni%` <- Negate(`%in%`)
+```
+
+```{r include=FALSE}
+add_group <- function(data){
+  TXGRP <- read.csv("TXGRP.csv", header = T)
+  NULLED <- read.csv("NULLED.csv", header = T)
+  nrow <- dim(data)[1]
+  name <- deparse(substitute(data))
+  nulled_col <- NULLED$Column[which(NULLED$Table == name)]
+  `%ni%` <- Negate(`%in%`)
+  dat <- subset(data, select = names(data) %ni% nulled_col)
+  group <- numeric(nrow)
+  patient_id <- unique(dat$PATIENT)
+  for (i in 1:length(patient_id)) {
+    if(is.element(patient_id[i],TXGRP$PATIENT)) {
+      group[which(dat$PATIENT == patient_id[i])] <- TXGRP$TXGROUP[which(TXGRP$PATIENT==patient_id[i])]
+    }
+    else{group[which(dat$PATIENT == patient_id[i])] <- 0}
+  }
+  group <- as.factor(group)
+  dat %>% 
+    add_column(DOSE = group, .after = "PATIENT") %>%
+    filter(DOSE != 0)
+}
+```
+
+```{r}
+SURA <- read.csv("SURA.csv", header = T)
+CRAV <- read.csv("CRAV.csv", header = T)
+GRP <- read.csv("GRP.csv", header = T)
+GRS <- read.csv("GRS.csv", header = T)
+TERMA <- read.csv("TERMA.csv", header = T)
+BKG <- read.csv("BKG.csv", header = T)
+COORDREP <- read.csv("COORDREP.csv", h = T)
+
+
+SURA <- add_group(SURA) %>% filter(RAT_PER %in% seq(1,16))
+CRAV <- add_group(CRAV)
+GRP <- add_group(GRP) %>% filter(RAT_PER %in% seq(0,16))
+GRS <- add_group(GRS) %>% filter(RAT_PER %in% seq(0,16))
+TERMA <- add_group(TERMA)
+BKG <- add_group(BKG)
+COORDREP <- add_group(COORDREP) %>% filter(RAT_PER %in% seq(0,16))
+```
+
+
+```{r}
+screen <- CRAV %>% 
+  select(PATIENT,DOSE,Q1) %>% 
+  add_column(RAT_PER = rep(0,nrow(CRAV)), .after = "DOSE")
+
+weekly <- SURA %>% 
+  select(PATIENT,DOSE,RAT_PER, Q9) %>% 
+  filter(PATIENT %in% TERMA$PATIENT)
+
+colnames(screen) <- colnames(weekly)
+
+crav_scores = rbind(screen,weekly) %>% 
+  mutate(RAT_PER = as.factor(RAT_PER)) %>% 
+  group_by(PATIENT) %>% 
+  dplyr::arrange(.by_group = T)
+
+ggplot(crav_scores[which(crav_scores$RAT_PER %in% seq(0,16,4)),], aes(as.factor(RAT_PER), Q9, color = DOSE, fill = DOSE)) + 
+  stat_boxplot(geom = "errorbar") +
+  geom_boxplot(outlier.shape = NA) +
+  scale_color_jama() +
+  scale_fill_manual(values = lighten(pal_jama()(4),0.4)) +
+  labs(title = "Comparison of Craving Scores Over Time", 
+       x = "Rating Week", y = "Craving Score", 
+       color = "Dose (mg)", fill = "Dose (mg)") +
+  theme_light() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        # axis.ticks.length = unit(-0.05, "in"),
+        axis.ticks.x = element_blank()
+        # axis.text.x = element_text(margin=unit(c(.3,.3,.3,.3), "cm")),
+        # axis.text.y = element_text(margin=unit(c(.3,.3,.3,.3), "cm"))
+        ) +
+  scale_y_continuous(expand = c(0,0.2)) 
+
+group_means <- crav_scores %>% 
+  group_by(DOSE,RAT_PER) %>% 
+  dplyr::summarise(mean = mean(Q9, na.rm = T), 
+            se = sd(Q9,na.rm = T)/sqrt(length(Q9)-length(which(is.na(Q9))))) %>% 
+    mutate(
+    xmin = ifelse(RAT_PER %in% seq(0,16,4), as.numeric(RAT_PER) - .1, NA),
+    xmax = ifelse(RAT_PER %in% seq(0,16,4), as.numeric(RAT_PER) + .1, NA)
+    )
+
+
+limits_low = aes(x = xmin, y = mean - se,xend = xmax,yend = mean - se)
+limits_high = aes(y = mean + se, yend = mean + se, x = xmin, xend = xmax)
+
+ggplot(group_means, aes(RAT_PER,mean,group=DOSE,color = DOSE))  +
+  geom_line(size =1, alpha = .6) +
+  geom_point(size =2,alpha=.6) +
+  geom_segment(size = 1, limits_low) +
+  geom_segment(size = 1,limits_high) +
+  scale_color_jama() +
+  labs(title = paste0("Mean Craving Scores Over Time by Dosage"), 
+       x = "Rating Week", y = "Mean Craving Score",
+       color = "Dose (mg)", fill = "Dose (mg)") +
+  theme_light() +
+  theme(panel.grid.major.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  scale_y_continuous(limits=c(0, 100), expand = c(0, 0))
+```
+
+```{r}
+mean_change <- crav_scores %>% 
+  group_by(DOSE,RAT_PER) %>% 
+  dplyr::summarise(mean = mean(Q9, na.rm = T)) %>%
+  group_by(DOSE) %>% 
+  mutate(change = mean - mean[RAT_PER==0])
+
+ggplot(mean_change, aes(RAT_PER,change,group=DOSE,color = DOSE))  +
+  geom_line(size =1, alpha = .6) +
+  geom_point(size =2,alpha=.6) +
+  scale_color_jama() +
+  labs(title = paste0("Mean Change in Craving Scores Over Time"), 
+       x = "Rating Week", y = "Mean Change in Craving Score",
+       color = "Dose (mg)", fill = "Dose (mg)") +
+  theme_light() +
+  theme(panel.grid.major.x = element_blank(),
+        axis.ticks.x = element_blank())
+  # scale_y_continuous(limits=c(0, 100), expand = c(0, 0))
+```
+
+
+```{r}
+patient <- select(GRP,PATIENT,DOSE,RAT_PER,Q1)
+staff <- select(GRS,PATIENT,DOSE,RAT_PER,Q1)
+gr_scores <- merge(patient,staff,by=c("PATIENT","DOSE","RAT_PER"))
+colnames(gr_scores)[4:5] = c("Q1P", "Q1S")
+
+# 24 patients went in on a non-standard week
+
+# gr_scores[which(gr_scores$RAT_PER %ni% seq(0,16,4)),] 
+
+# Change RAT_PER to 4 main rating periods for global rating score evaluations
+# Going to make function later
+
+merge_per <- function(data){
+  temp <- data %>% 
+  filter(RAT_PER %ni% seq(0,16,4)) %>% 
+  select(RAT_PER)
+  
+  for (i in 1:nrow(temp)){
+    if (temp[i,] %in% c(1:3)) {
+      temp[i,] <- 4
+    }
+    else if (temp[i,] %in% c(5:7)) {
+      temp[i,] <- 8
+    }
+    else if (temp[i,] %in% c(9:11)) {
+      temp[i,] <- 12
+    }
+    else {
+      temp[i,] <- 16
+    }
+  }
+  
+  tmp <- data
+  tmp[which(tmp$RAT_PER %ni% seq(0,16,4)),]$RAT_PER <- temp$RAT_PER
+  return(tmp)
+}
+
+patient <- merge_per(patient)
+staff <-  merge_per(staff)
+gr_scores <- merge_per(gr_scores)
+
+grs_means <- staff %>% 
+  select(DOSE, RAT_PER, Q1) %>% 
+  mutate(RAT_PER = as.factor(RAT_PER)) %>%
+  group_by(DOSE,RAT_PER) %>% 
+  summarise(mean = mean(Q1, na.rm = T), 
+            se = sd(Q1,na.rm = T)/sqrt(length(Q1)-length(which(is.na(Q1)))))
+
+grs_means$xmin = rep(seq(1,5),4) -.05
+grs_means$xmax = rep(seq(1,5),4) +.05
+limits_low = aes(x = xmin, y = mean - se,xend = xmax,yend = mean - se)
+limits_high = aes(y = mean + se, yend = mean + se, x = xmin, xend = xmax)
+
+ggplot(grs_means, aes(RAT_PER,mean,group=DOSE,color = DOSE, fill =DOSE))  +
+  geom_line(size =1, alpha = .6) +
+  geom_point(size =2, alpha=.6) +
+  geom_segment(size = 1, limits_low) + 
+  geom_segment(size = 1,limits_high) +
+  scale_color_jama() +
+  ylim(25,90) +
+  labs(title = paste0("Staff Reported Drug Problem Severity: 0 - 100"), 
+       x = "Rating Week", y = "Mean Drug Problem Severity", 
+       color = "Dose (mg)", fill = "Dose (mg)") +
+  theme_light() +
+  theme(panel.grid.major.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  scale_y_continuous(limits=c(0, 100), expand = c(0, 0))
+
+
+grp_means <- patient %>%
+  select(DOSE,RAT_PER,Q1) %>%
+  mutate(RAT_PER = as.factor(RAT_PER)) %>%
+  group_by(DOSE,RAT_PER) %>% 
+  summarise(mean = mean(Q1, na.rm = T), 
+            se = sd(Q1,na.rm = T)/sqrt(length(Q1)-length(which(is.na(Q1)))))
+
+grp_means$xmin = rep(seq(1,5),4) -.05
+grp_means$xmax = rep(seq(1,5),4) +.05
+limits_low = aes(x = xmin, y = mean - se,xend = xmax,yend = mean - se)
+limits_high = aes(y = mean + se, yend = mean + se, x = xmin, xend = xmax)
+
+ggplot(grp_means, aes(RAT_PER,mean,group=DOSE,color = DOSE, fill =DOSE))  +
+  geom_line(size =1, alpha = .6) +
+  geom_point(size =2, alpha=.8) +
+  geom_segment(size = 1, limits_low) + 
+  geom_segment(size = 1,limits_high) +
+  scale_color_jama() +
+  labs(title = paste0("Patient Reported Drug Problem Severity: 0 - 100"), 
+       x = "Rating Week", y = "Mean Drug Problem Severity", 
+       color = "Dose (mg)", fill = "Dose (mg)") +
+  theme_light() +
+  theme(panel.grid.major.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  scale_y_continuous(limits=c(0, 100), expand = c(0, 0))
+
+```
+
+```{r}
+gr_scores$DOSE <- factor(gr_scores$DOSE, levels = c("1","4","8","16"), 
+                  labels = c("1mg","4mg","8mg","16mg"))
+gr_scores$RAT_PER <- factor(gr_scores$RAT_PER, levels = c("0","4","8","12","16"), 
+                  labels = c("Week 0","Week 4","Week 8","Week 12","Week 16"))
+
+gr_scores %>% 
+  group_by(DOSE,RAT_PER) %>% 
+  summarise(COR = cor(Q1P,Q1S,use="pairwise.complete.obs"))
+
+ggscatter(
+  data = gr_scores, 
+  x = "Q1P", 
+  y = "Q1S", 
+  title = "Patient vs. Staff Reported GRS Correlations",
+  xlab = "Patient Reported",
+  color = pal_jama(alpha = .4)(1),
+  shape = 20,
+  add = "reg.line", 
+  add.params = list(color = "#00A1D5FF", fill = "#60CAFFFF"),
+  conf.int = T, 
+  cor.method = "pearson", 
+  ) +
+  stat_cor(aes(label = ..r.label..)) +
+  facet_grid(DOSE~RAT_PER,switch = "y") +
+  scale_y_continuous("Staff Reported", position="right") +
+  theme_light()
+
+```
+
+
+```{r}
+ret <- TERMA %>% select(PATIENT,DOSE,VST_DATE,Q1) %>% 
+  filter(PATIENT %in% CRAV$PATIENT) %>%
+  mutate(VST_DATE = replace(VST_DATE,is.na(VST_DATE),0)) %>% 
+  mutate(VST_DATE = replace(VST_DATE, VST_DATE < 0, VST_DATE + 374)) %>% 
+  mutate(VST_DATE = replace(VST_DATE, Q1 != 1 & VST_DATE==105, 104)) %>% 
+  dplyr::rename(STATUS = Q1) %>% 
+  mutate(VST_DATE = replace(VST_DATE, VST_DATE>105, 105)) %>%  
+  mutate(STATUS = replace(STATUS,STATUS == 1, 0)) %>%
+  mutate(STATUS = replace(STATUS,STATUS != 0, 1))
+
+fit <- survfit(Surv(VST_DATE,STATUS) ~ DOSE, data = ret)
+summary(fit)
+ggsurvplot(
+  fit, 
+  risk.table = T,
+  risk.table.col = "strata",
+  risk.table.height = .3,
+  risk.table.y.text = T,
+  risk.table.title = "Patients remaining on study",
+  risk.table.pos="out",
+  conf.int = F,
+  conf.int.style = "step",
+  # ncensor.plot = T,
+  # ncensor.height = .2,
+  title = "Patient Retention by Dosage",
+  xlim = c(0,105),
+  xlab = "Time (days)",
+  ylab = "Retention Rate",
+  break.time.by = 7,
+  legend.title = "Dose",
+  legend.labs = c("1mg","4mg","8mg","16mg"),
+  palette = pal_jama(alpha = .6)(4),
+  ggtheme = theme_minimal(base_size = 10),
+  tables.theme = theme_cleantable()
+  ) 
+```
+
+
+```{r}
+drug_use = SURA %>% 
+  group_by(DOSE,RAT_PER,Q1USE) %>% 
+  summarise(used = n()) %>% 
+  group_by(RAT_PER, add = T) %>% 
+  mutate(total = sum(used)) %>% 
+  group_by(Q1USE) %>% 
+  mutate(prop = used/total) %>% 
+  ungroup() %>% 
+  filter(Q1USE == 1) %>% 
+  select(-c(Q1USE)) %>% 
+  mutate(RAT_PER = as.factor(RAT_PER))
+
+ggplot(drug_use, aes(RAT_PER,prop,group=DOSE,color = DOSE, fill =DOSE))  +
+  geom_line(size =1, alpha = .6) +
+  geom_point(size =2,alpha=.6) +
+  scale_color_jama() +
+  labs(title = paste0("Proportion of Patients who Reported Heroin Usage in Past Study Week"), 
+       x = "Study Week", y = "Heroin Usage Rate", color = "Dose (mg)", fill = "Dose (mg)") +
+  theme_light() +
+    theme(panel.grid.major.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  scale_y_continuous(limits=c(0, 1), expand = c(0, 0))
+```
+
+```{r}
+complete <- ret %>% filter(STATUS == 0) %>% select(PATIENT) %>% unlist()
+dropped <- ret %>% filter(STATUS == 1) %>% select(PATIENT) %>% unlist()
+
+use_c <- SURA %>% 
+  filter(PATIENT %in% complete) %>% 
+  select(PATIENT, DOSE, VST_DATE, RAT_PER, Q1USE) %>% 
+  mutate(Q1USE = factor(Q1USE, levels = c(1,2), labels = c("Yes", "No")), 
+         RAT_PER = as.factor(RAT_PER))
+
+use_d <- SURA %>% 
+  filter(PATIENT %in% dropped) %>% 
+  select(PATIENT, DOSE, VST_DATE, RAT_PER, Q1USE) %>% 
+  mutate(Q1USE = factor(Q1USE, levels = c(1,2), labels = c("Yes", "No")), 
+         RAT_PER = as.factor(RAT_PER))
+
+filter(use_c,DOSE==1) %>% ggplot(aes(RAT_PER, fill = Q1USE)) +
+  geom_bar(position = "fill") + 
+  labs(title = paste0("Self Report of Drug Use Over Time: 1mg"), 
+       x = "Rating Week", y = "", fill = "Used Heroin?")
+
+filter(use_c,DOSE==4) %>% ggplot(aes(RAT_PER, fill = Q1USE)) +
+  geom_bar(position = "fill") +
+  labs(title = paste0("Self Report of Drug Use Over Time: 4mg"), 
+       x = "Rating Week", y = "", fill = "Used Heroin?")
+
+filter(use_c,DOSE==8) %>% ggplot(aes(RAT_PER, fill = Q1USE)) +
+  geom_bar(position = "fill") +
+  labs(title = paste0("Self Report of Drug Use Over Time: 8mg"), 
+       x = "Rating Week", y = "", fill = "Used Heroin?")
+
+filter(use_c,DOSE==16) %>% ggplot(aes(RAT_PER, fill = Q1USE)) +
+  geom_bar(position = "fill") +
+  labs(title = paste0("Self Report of Drug Use Over Time: 16mg"), 
+       x = "Rating Week", y = "", fill = "Used Heroin?")
+
+
+filter(use_d,DOSE==1) %>% ggplot(aes(RAT_PER, fill = Q1USE)) +
+  geom_bar(position = "fill") + 
+  labs(title = paste0("Self Report of Drug Use Over Time: 1mg"), 
+       x = "Rating Week", y = "", fill = "Used Heroin?")
+
+filter(use_d,DOSE==4) %>% ggplot(aes(RAT_PER, fill = Q1USE)) +
+  geom_bar(position = "fill") +
+  labs(title = paste0("Self Report of Drug Use Over Time: 4mg"), 
+       x = "Rating Week", y = "", fill = "Used Heroin?")
+
+filter(use_d,DOSE==8) %>% ggplot(aes(RAT_PER, fill = Q1USE)) +
+  geom_bar(position = "fill") +
+  labs(title = paste0("Self Report of Drug Use Over Time: 8mg"), 
+       x = "Rating Week", y = "", fill = "Used Heroin?")
+
+filter(use_d,DOSE==16) %>% ggplot(aes(RAT_PER, fill = Q1USE)) +
+  geom_bar(position = "fill") +
+  labs(title = paste0("Self Report of Drug Use Over Time: 16mg"), 
+       x = "Rating Week", y = "", fill = "Used Heroin?")
+```
+
+
+
+
+```{r}
+EP <- crav_scores %>% summarise(
+  low_crav = as.numeric(any(Q9 <= 21, na.rm = T)),
+  improved = as.numeric((min(Q9[RAT_PER != 0], na.rm = T) < Q9[RAT_PER==0]))) %>% 
+  mutate(A = ifelse((low_crav==1 & improved==1)|(low_crav == 1 & is.na(improved)),1,0)) %>% 
+  add_group()
+
+####################################################
+terma <- select(TERMA, PATIENT,DOSE,Q3)
+
+terma$Q3 <- ifelse(terma$Q3 %in% c(5), 1, 0)
+
+  
+terma <- terma %>% group_by(PATIENT) %>% arrange(.by_group = T) %>% rename(B = Q3)
+
+############################################################
+sura.q1 <- SURA %>% select(PATIENT,DOSE,RAT_PER,Q1USE) %>% 
+  filter(PATIENT %in% TERMA$PATIENT) %>% 
+  filter(RAT_PER %in% seq(1,16)) %>% 
+  mutate(Q1USE = replace(Q1USE,is.na(Q1USE),0))
+
+n <- dim(sura.q1)[1]
+runs <- rep(0,n)
+count <- 0
+
+for (i in 1:(n-3)) {
+  if(all( sura.q1[i:(i+3),4] == 2 ) ){
+    count <- count + 1
+    runs[count] <- i
+  }
+}
+
+sura.q1$COM <- 0
+sura.q1$COM[runs] <- 1
+
+sura.c <- sura.q1 %>%  
+  group_by(PATIENT) %>% 
+  summarise(C = as.numeric(any(COM == 1)))
+
+sura.c <- rbind(sura.c,data.frame(PATIENT=c(487465,816769), C = c(0,0))) %>% 
+  group_by(PATIENT) %>% arrange(.by_group = T) %>% 
+  add_group()
+##########################################################
+coord <- COORDREP %>% 
+  dplyr::select(PATIENT, DOSE, RAT_PER, Q1ATTEND, Q2ATTEND, Q3ATTEND, 
+         Q4ATTEND, Q5ATTEND, Q6ATTEND, Q7ATTEND) %>%
+  filter(PATIENT %in% TERMA$PATIENT) %>% 
+  filter(RAT_PER %in% seq(1,16)) %>% 
+  mutate(Q1ATTEND = replace(Q1ATTEND,which(Q1ATTEND!=1 | is.na(Q1ATTEND)),0),
+         Q2ATTEND = replace(Q2ATTEND,which(Q2ATTEND!=1 | is.na(Q2ATTEND)),0),
+         Q3ATTEND = replace(Q3ATTEND,which(Q3ATTEND!=1 | is.na(Q3ATTEND)),0),
+         Q4ATTEND = replace(Q4ATTEND,which(Q4ATTEND!=1 | is.na(Q4ATTEND)),0),
+         Q5ATTEND = replace(Q5ATTEND,which(Q5ATTEND!=1 | is.na(Q5ATTEND)),0),
+         Q6ATTEND = replace(Q6ATTEND,which(Q6ATTEND!=1 | is.na(Q6ATTEND)),0),
+         Q7ATTEND = replace(Q7ATTEND,which(Q7ATTEND!=1 | is.na(Q7ATTEND)),0)) %>%
+  group_by(PATIENT) %>% arrange(.by_group = T) 
+
+coord$SOA <- rowSums(coord[4:10])  
+
+coord.s <- data.frame(coord[,c(1,11)]) 
+
+# which(TERMA$PATIENT %ni% coord.s$PATIENT)
+# TERMA$PATIENT[266]
+# TERMA$PATIENT[533]
+
+coord.s <- rbind(coord.s,data.frame(PATIENT=c(487465,816769), SOA = c(0,0))) %>% 
+  group_by(PATIENT) %>% 
+  arrange(.by_group = T) %>% 
+  summarise_all(sum) 
+  
+coord.s <- merge(coord.s, TERMA, by = "PATIENT")
+coord.s <- coord.s[c(1,2,6)]
+coord.s$POA <- coord.s$SOA / (coord.s$VST_DATE+1) 
+
+coord.s <- coord.s %>% group_by(PATIENT) %>% 
+  summarise(D = as.numeric(POA>.75 | is.na(POA))) %>% 
+  add_group()
+
+###############################################################
+# DaysMed <- COORDREP %>% select(PATIENT,DOSE,RAT_PER,Q1DOSE,Q2DOSE,Q3DOSE,Q4DOSE,Q5DOSE,Q6DOSE,Q7DOSE) %>% 
+#   mutate(
+#     Q1DOSE = ifelse(Q1DOSE ==4|is.na(Q1DOSE) ,0,1),
+#     Q2DOSE = ifelse(Q1DOSE ==4|is.na(Q2DOSE) ,0,1),
+#     Q3DOSE = ifelse(Q1DOSE ==4|is.na(Q3DOSE) ,0,1),
+#     Q4DOSE = ifelse(Q1DOSE ==4|is.na(Q4DOSE) ,0,1),
+#     Q5DOSE = ifelse(Q1DOSE ==4|is.na(Q5DOSE) ,0,1),
+#     Q6DOSE = ifelse(Q1DOSE ==4|is.na(Q6DOSE) ,0,1),
+#     Q7DOSE = ifelse(Q1DOSE ==4|is.na(Q7DOSE) ,0,1)
+#     ) %>% 
+#   group_by(PATIENT) %>% arrange(.by_group = T) 
+# 
+# DaysMed$SUM <- rowSums(DaysMed[,4:10])
+# DAYS_MED <- DaysMed[,c(1,11)] 
+# 
+# DAYS_MED<- rbind(DAYS_MED,data.frame(PATIENT=c(487465,816769), SUM = c(0,0))) %>% 
+#   group_by(PATIENT) %>% 
+#   arrange(.by_group = T) %>% 
+#   summarise_all(sum) 
+# 
+# DAYS_MED <- merge(DAYS_MED, TERMA, by = "PATIENT")
+# DAYS_MED <- DAYS_MED[c(1,2,6)]
+# DAYS_MED$PDD <- DAYS_MED$SUM / (DAYS_MED$VST_DATE+1) 
+# 
+# DAYS_MED <- DAYS_MED %>% group_by(PATIENT) %>% 
+#   summarise(E = as.numeric(PDD>.9 | is.na(PDD))) %>% 
+#   add_group()
+##############################################################
+B <- terma$B
+C <- sura.c$C
+#D <- coord.s$D
+#D <- DAYS_MED$E
+
+EP <- cbind(EP,B,C)
+#EP <- cbind(EP,B,C,D)
+EP <- EP[,-c(3,4)]
+
+# A = craving score 
+# B = global rating score at termination
+# C = self reported heroin use
+# D = attendance
+
+EP <- EP %>% mutate(
+  AB = ifelse(A==1 & B==1,1,0),
+  AC = ifelse(A==1 & C==1,1,0),
+  #AD = ifelse(A==1 & D==1,1,0),
+  BC = ifelse(B==1 & C==1,1,0),
+  #BD = ifelse(B==1 & D==1,1,0),
+  #CD = ifelse(C==1 & D==1,1,0),
+  ABC = ifelse(A==1 & B==1 & C==1,1,0),
+  #ABD = ifelse(A==1 & B==1 & D==1,1,0),
+  #ACD = ifelse(A==1 & C==1 & D==1,1,0),
+  #BCD = ifelse(B==1 & C==1 & D==1,1,0),
+  #ABCD = ifelse(A==1 & B==1 & C==1 & D==1,1,0)
+  ) 
+
+EP %>% group_by(DOSE) %>% 
+  summarise(
+    resp_ratio_A = sum(A == 1)/n(),
+    resp_ratio_B = sum(B == 1)/n(),
+    resp_ratio_C = sum(C == 1)/n(),
+    #resp_ratio_D = sum(D == 1)/n(),
+    resp_ratio_AB = sum(AB == 1)/n(),
+    resp_ratio_AC = sum(AC == 1)/n(),
+    #resp_ratio_AD = sum(AD == 1)/n(),
+    resp_ratio_BC = sum(BC == 1)/n(),
+    #resp_ratio_BD = sum(BD == 1)/n(),
+    #resp_ratio_CD = sum(CD == 1)/n(),
+    resp_ratio_ABC = sum(ABC == 1)/n(),
+    #resp_ratio_ABD = sum(ABD == 1)/n(),
+    #resp_ratio_ACD = sum(ACD == 1)/n(),
+    #resp_ratio_BCD = sum(BCD == 1)/n(),
+    #resp_ratio_ABCD = sum(ABCD == 1)/n()
+    )
+```
+
+```{r}
+EP %>% count(DOSE, A) %>% 
+  group_by(DOSE) %>% 
+  mutate(prop = n/sum(n)) %>% 
+  mutate(A = factor(A, levels = c(0,1), labels = c("No", "Yes")), 
+              DOSE = factor(DOSE, levels = c(1,4,8,16), labels = c("1mg","4mg","8mg","16mg"))) %>% 
+  ggplot(aes(DOSE, prop, fill = A)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(prop * 100), '%')),
+            position = position_stack(vjust = 0.5)) +
+  labs( x = "", y = "", fill = "Responder?") +
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        legend.key.size = unit(4, "mm"),
+        legend.position = "left")
+
+EP %>% count(DOSE, B) %>% 
+  group_by(DOSE) %>% 
+  mutate(prop = n/sum(n)) %>% 
+  mutate(B = factor(B, levels = c(0,1), labels = c("No", "Yes")), 
+              DOSE = factor(DOSE, levels = c(1,4,8,16), labels = c("1mg","4mg","8mg","16mg"))) %>% 
+  ggplot(aes(DOSE, prop, fill = B)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(prop * 100), '%')),
+            position = position_stack(vjust = 0.5)) +
+  labs( x = "", y = "", fill = "Responder?") +
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        legend.key.size = unit(4, "mm"),
+        legend.position = "left")
+
+EP %>% count(DOSE, C) %>% 
+  group_by(DOSE) %>% 
+  mutate(prop = n/sum(n)) %>% 
+  mutate(C = factor(C, levels = c(0,1), labels = c("No", "Yes")), 
+              DOSE = factor(DOSE, levels = c(1,4,8,16), labels = c("1mg","4mg","8mg","16mg"))) %>% 
+  ggplot(aes(DOSE, prop, fill = C)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(prop * 100), '%')),
+            position = position_stack(vjust = 0.5)) +
+  labs( x = "", y = "", fill = "Responder?") +
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        legend.key.size = unit(4, "mm"),
+        legend.position = "left")
+
+EP %>% count(DOSE, AB) %>% 
+  group_by(DOSE) %>% 
+  mutate(prop = n/sum(n)) %>% 
+  mutate(AB = factor(AB, levels = c(0,1), labels = c("No", "Yes")), 
+              DOSE = factor(DOSE, levels = c(1,4,8,16), labels = c("1mg","4mg","8mg","16mg"))) %>% 
+  ggplot(aes(DOSE, prop, fill = AB)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(prop * 100), '%')),
+            position = position_stack(vjust = 0.5)) +
+  labs( x = "", y = "", fill = "Responder?") +
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        legend.key.size = unit(4, "mm"),
+        legend.position = "left")
+
+EP %>% count(DOSE, AC) %>% 
+  group_by(DOSE) %>% 
+  mutate(prop = n/sum(n)) %>% 
+  mutate(AC = factor(AC, levels = c(0,1), labels = c("No", "Yes")), 
+              DOSE = factor(DOSE, levels = c(1,4,8,16), labels = c("1mg","4mg","8mg","16mg"))) %>% 
+  ggplot(aes(DOSE, prop, fill = AC)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(prop * 100), '%')),
+            position = position_stack(vjust = 0.5)) +
+  labs( x = "", y = "", fill = "Responder?") +
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        legend.key.size = unit(4, "mm"),
+        legend.position = "left")
+
+EP %>% count(DOSE, BC) %>% 
+  group_by(DOSE) %>% 
+  mutate(prop = n/sum(n)) %>% 
+  mutate(BC = factor(BC, levels = c(0,1), labels = c("No", "Yes")), 
+              DOSE = factor(DOSE, levels = c(1,4,8,16), labels = c("1mg","4mg","8mg","16mg"))) %>% 
+  ggplot(aes(DOSE, prop, fill = BC)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(prop * 100), '%')),
+            position = position_stack(vjust = 0.5)) +
+  labs( x = "", y = "", fill = "Responder?") +
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        legend.key.size = unit(4, "mm"),
+        legend.position = "left")
+
+EP %>% count(DOSE, ABC) %>% 
+  group_by(DOSE) %>% 
+  mutate(prop = n/sum(n)) %>% 
+  mutate(ABC = factor(ABC, levels = c(0,1), labels = c("No", "Yes")), 
+              DOSE = factor(DOSE, levels = c(1,4,8,16), labels = c("1mg","4mg","8mg","16mg"))) %>% 
+  ggplot(aes(DOSE, prop, fill = ABC)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(prop * 100), '%')),
+            position = position_stack(vjust = 0.5)) +
+  labs( x = "", y = "", fill = "Responder?") +
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        legend.key.size = unit(4, "mm"),
+        legend.position = "left")
+```
+
+```{r}
+models <- list()
+PE <- c("A","B","C","AB","AC","BC","ABC")
+
+for (i in PE){
+  models[[i]] = glm(reformulate("DOSE",i),family = "binomial",data = EP)
+}
+
+## Models with D component
+# models <- list()
+# PE <- c("A","B","C","D","AB","AC","AD","BC","BD","ABC","ABD", "ACD", "BCD","ABCD")
+# 
+# for (i in PE){
+#   models[[i]] = glm(reformulate("DOSE",i),family = "binomial",data = EP)
+# }
+```
+
+```{r}
+# Test and Train for Models
+set.seed(539)
+EP_idx = sample(nrow(EP), 0.75*nrow(EP))
+EP_trn = EP[EP_idx, ]
+EP_tst = EP[-EP_idx, ]
+
+#ABC train-test
+models_trn <- list()
+PE <- c("A","B","C","AB","AC","BC","ABC")
+for (i in PE){
+  models_trn[[i]] = glm(reformulate("DOSE",i),family = "binomial",data = EP_trn)
+}
+
+#ABCD train-test
+# models_trn <- list()
+# PE <- c("A","B","C","D","AB","AC","AD","BC","BD","ABC","ABD", "ACD", "BCD","ABCD")
+# for (i in PE){
+#   models_trn[[i]] = glm(reformulate("DOSE",i),family = "binomial",data = EP_trn)
+# }
+```
+
+```{r}
+#Prediction and Confusion Matrix
+## ABC
+predABC=predict(models_trn[["ABC"]], EP_tst, type = "response")
+predABC_cm <- confusionMatrix(as.factor(as.numeric(predABC > .5)),as.factor(EP_tst$ABC))
+
+## ABCD
+# predABCD=predict(models_trn[["ABCD"]], EP_tst, type = "response")
+# predABCD_cm <- confusionMatrix(as.factor(as.numeric(predABCD > .5)),as.factor(EP_tst$ABCD))
+
+```
+
+
+```{r}
+# ROC Curve
+library(ROCR)
+prABC <- prediction(predABC,as.factor(EP_tst$ABC))
+perfABC <- performance(prABC,measure = "tpr", x.measure = "fpr") 
+plot(perfABC, main = "ROC for Models ABC", col = "blue")
+# AUC - Area Under the Curve
+AUC_ABC <- performance(prABC, 'auc')  
+AUC_ABC <- as.numeric(AUC_ABC@y.values)
+plot(perfABC, main = "ROC for Models ABC", col = "blue", print.auc = TRUE)
+# prABCD <- prediction(predABCD,as.factor(EP_tst$ABCD))
+# perfABCD <- performance(prABCD,measure = "tpr", x.measure = "fpr") 
+#plot(perfABCD, col = "green")
+# plot(perfABCD, col = "green",add=TRUE)
+abline(a=0,b=1,lty=2)
+# AUC - Area Under the Curve
+# AUC_ABCD <- performance(prABCD, 'auc')  
+```
+```{r}
+# ROC for all Models
+rocplot=function(pred, truth, ...){
+  predob = prediction(pred, truth)
+  perf = performance(predob , "tpr", "fpr") 
+  plot(perf ,...)
+}
+
+pred <- list()
+PE <- c("A","B","C","AB","AC","BC","ABC")
+for (i in PE){
+  pred[[i]]=predict(models_trn[[i]], EP_tst, type = "response")
+}
+```
+
+
+
+
+```{r}
+rocplot(pred[["A"]], as.factor(EP_tst[,"A"]), main="ROC for Log Reg Models",col="red")
+rocplot(pred[["B"]], as.factor(EP_tst[,"B"]),col="orange",add=T)
+rocplot(pred[["C"]], as.factor(EP_tst[,"C"]), col="yellow",add=T)
+rocplot(pred[["AB"]], as.factor(EP_tst[,"AB"]),col="green",add=T)
+rocplot(pred[["AC"]], as.factor(EP_tst[,"AC"]),col="blue",add=T)
+rocplot(pred[["BC"]], as.factor(EP_tst[,"BC"]),col="purple",add=T)
+rocplot(pred[["ABC"]], as.factor(EP_tst[,"ABC"]),col="magenta",add=T)
+abline(a=0,b=1,lty=2)
+legend("bottomright", c('A','B','C','AB','AC','BC','ABC'),
+       lty=1, col=c('red','orange','yellow','green', 'blue','purple','magenta'),
+       cex = 0.75)
+```
+
+
+```{r}
+plot_models(models,
+            axis.labels = c("16mg","8mg","4mg"),
+            axis.lim = c(.9,9),
+            wrap.title = 75,
+            title = "Odd Ratio 95% Confidence Intervals for Potential Primary Endpoints",
+            legend.title = "Primary Endpoint",
+            colors = qualitative_hcl(7,"Set2"))
+```
+
+
+```{r}
+# Covariate Analysis, Model Selection
+
+opioid <- BKG %>% select(PATIENT,DOSE,Q2,Q3,Q4,Q5,Q7,Q8, Q9,Q11,Q12, DOB) %>% 
+  rename(RACE = Q2, GENDER = Q3, AGE = DOB, SCHOOL= Q4, WORK= Q5, INCOME= Q7, MARITAL = Q8, LIVING = Q9, DRUGS = Q11, JAIL= Q12) %>% 
+  group_by(PATIENT) %>% 
+  arrange(.by_group = T) %>% 
+  # merge(TERMA[,c("PATIENT","Q3")], by = "PATIENT") %>% 
+  # rename(GRS_TERM = Q3) %>% 
+  add_column(ABC=EP$ABC) %>% 
+  mutate(RACE = factor(RACE, levels=c(1,2,3,5,6),labels=c('White','Black','American Indian','Asian/Pacific Islander','Hispanic')), 
+         GENDER = factor(GENDER, levels = c(1,2), labels = c("Male", "Female")), 
+         AGE = factor(ifelse(AGE <= 35, "less than or equal to 35 years", "greater than 35 years")),
+         SCHOOL = factor(ifelse(SCHOOL <= 4, 'Minimum High School Educated', 'High school and below')),
+         WORK=factor(ifelse(WORK == 1, 'Unemployed', 'Employed')),   
+         LIVING = factor(ifelse(LIVING <= 5, 'Not Alone', 'Alone/Unstable')),
+         DRUGS=factor(ifelse(DRUGS == 1, "Yes", "No/Dont_Know")), 
+         JAIL=factor(JAIL ,levels = c(1,2), labels = c("Yes", "No")),
+         MARITAL = factor(
+    ifelse(MARITAL <= 2, 'Married', 'Unmarried'))
+) 
+
+library(forcats)
+opioid$RACE <- fct_collapse(opioid$RACE, 'Other' = c('American Indian','Asian/Pacific Islander'))
+```
+
+```{r}
+# Include Base Craving Score
+# Creating Baseline Craving Data
+### Remove unnecessary columns and remove rows with duplicate patient numbers
+
+crav_base<-CRAV[, c(3,4,6)]
+colnames(crav_base)[3] = c("HEROIN_CRAVE")
+crav_base<-crav_base %>% distinct(PATIENT, .keep_all = TRUE)
+
+### Join datasets by PATIENT# and TXGROUP
+opioid <-left_join(opioid, crav_base, by=c("PATIENT", "DOSE"))
+```
+
+```{r}
+# Full Model
+fit <- glm(ABC~.,family = "binomial",data=opioid[,-1])
+summary(fit)
+
+plot_model(fit,axis.lim = c(0.1,20))
+```
+
+
+```{r}
+# Model Selection
+library(bestglm)
+Xy <- cbind(X = opioid[,-c(1,13)], Y = opioid[,13])
+out_AIC <- bestglm(Xy, family = binomial, IC="AIC")
+summary(out_AIC$BestModel) #best model
+out_AIC$BestModels
+```
+
+```{r}
+best_fit_AIC = out_AIC$BestModel
+plot_model(best_fit_AIC,axis.lim = c(0.1,20))
+```
+
+```{r}
+out_BIC <- bestglm(Xy, family = binomial, IC="BIC")
+summary(out_BIC$BestModel) #best model
+out_BIC$BestModels
+```
+
+```{r}
+best_fit_BIC = out_BIC$BestModel
+plot_model(best_fit_BIC,axis.lim = c(0.1,20))
+```
+
+```{r}
+# Test and Train for Models
+set.seed(539)
+opioid_mod <- opioid[,-c(1)]
+op_idx = sample(nrow(opioid[,-c(1)]), 0.75*nrow(opioid[,-c(1)]))
+op_trn = opioid_mod[op_idx, ]
+op_tst = opioid_mod[-op_idx, ]
+
+# GLM fit from best model with train
+## AIC
+mod_AIC <- glm(ABC ~ DOSE + RACE + GENDER + INCOME + DRUGS + AGE + HEROIN_CRAVE, family = binomial, data = op_trn)
+summary(mod_AIC)
+pred_AIC = predict(mod_AIC, op_tst, type = "response", na.action = na.omit) ## NAs
+## Which are NA's
+which(is.na(predict(mod_AIC, op_tst, type = "response")))
+## Remove from testing data
+op_tst1 <- op_tst[-c(17,18,73,91,97,101,103,122,153 ),]
+predAIC_cm <- confusionMatrix(as.factor(as.numeric(pred_AIC > .5)),as.factor(op_tst1$ABC))
+rocplot(pred_AIC, op_tst1[,"ABC"], main="ROC for Best Models: AIC, BIC",col="red")
+
+## BIC
+mod_BIC <- glm(ABC ~ DOSE + RACE + INCOME + DRUGS, family = binomial, data = op_trn)
+summary(mod_BIC)
+pred_BIC = predict(mod_BIC, op_tst, type = "response")
+which(is.na(pred_BIC))
+op_tst2 = op_tst[-c(17,73,91,97,101,122),]
+pred_BIC = predict(mod_BIC, op_tst, type = "response",na.action=na.omit)
+predBIC_cm <- confusionMatrix(as.factor(as.numeric(pred_BIC > .5)),as.factor(op_tst2$ABC))
+rocplot(pred_BIC, op_tst2[,"ABC"],col="blue", add=T)
+abline(a=0,b=1,lty=2)
+legend("bottomright", c('AIC','BIC'),
+       lty=1, col=c('red','blue'),
+       cex = 0.75)
+
+
+```
+
+```{r}
+rocAUC=function(pred, truth, ...){
+  predob = prediction(pred, truth)
+  perf = performance(predob, "auc") 
+  auc = as.numeric(perf@y.values)
+  return(auc)
+}
+rocAUC(pred_AIC, op_tst1[,"ABC"])
+rocAUC(pred_BIC, op_tst2[,"ABC"])
+```
+
+
+```{r}
+# dec <- crav_scores %>% group_by(PATIENT) %>% 
+#   mutate(change = Q9 - Q9[min(which(!is.na(Q9)))]) %>% 
+#   summarise(avg_change = mean(change[-min(which(!is.na(Q9)))], na.rm = T))
+```
+
+
+```{r}
+## All categories
+compareGroups(ABC ~ .- DOSE, data = opioid_mod, byrow=TRUE)
+alltab <- descrTable(ABC ~ .- DOSE, data = opioid_mod, byrow=TRUE)
+st <- strataTable(alltab, "DOSE", strata.names = c('1 Mg', '4 Mg', '8 Mg', '16 Mg'))
+
+# summary(alltab)
+export2md(st, landscape = T, size = 12, header.labels = c(p.overall = "p-value"))
+export2md(st)
+## Option: export to latex
+#export2latex(st, landscape = T)
+```
+
+
+
+```{r}
+# See Differences by Treatment Groups
+combined.test.DOSE <-compareGroups(DOSE ~ GENDER + RACE + MARITAL_STATUS + AGE + HEROIN_CRAVE, data = opioid_base, byrow=TRUE)
+combined.test.table.DOSE <- createTable(combined.test.DOSE, show.ratio = TRUE, show.p.overall=TRUE)
+combined.test.table.DOSE
+```
+
+
+```{r}
+## Responder Ratios
+opioid_ce <- opioid_mod %>% add_column(A=EP$A,B=EP$B,C=EP$C,AB=EP$AB,AC=EP$AC,BC=EP$BC)
+
+A.tab <- descrTable(A ~ DOSE, data = opioid_ce,  byrow=TRUE)
+B.tab <- descrTable(B ~ DOSE, data = opioid_ce, byrow=TRUE)
+C.tab <- descrTable(C ~ DOSE, data = opioid_ce,   byrow=TRUE)
+AB.tab <- descrTable(AB ~ DOSE, data = opioid_ce,  byrow=TRUE)
+AC.tab <- descrTable(AC ~ DOSE, data = opioid_ce,  byrow=TRUE)
+BC.tab <- descrTable(BC ~ DOSE, data = opioid_ce,  byrow=TRUE)
+ABC.tab <- descrTable(ABC ~ DOSE, data = opioid_ce,  byrow=TRUE)
+```
+
+```{r}
+# Combining tables
+export2md(A.tab, header.labels = c(p.overall = "p-value"))
+export2md(B.tab, header.labels = c(p.overall = "p-value"))
+export2md(C.tab, header.labels = c(p.overall = "p-value"))
+export2md(AB.tab, header.labels = c(p.overall = "p-value"))
+export2md(AC.tab, header.labels = c(p.overall = "p-value"))
+export2md(BC.tab, header.labels = c(p.overall = "p-value"))
+export2md(ABC.tab, header.labels = c(p.overall = "p-value"))
+```
+
+
